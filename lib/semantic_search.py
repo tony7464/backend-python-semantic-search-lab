@@ -140,6 +140,7 @@ def build_search_text(document: dict[str, Any]) -> str:
     Embedding only the title may lose important meaning. Embedding title,
     category, summary, and tags gives the model more context.
     """
+    # Combine title, category, summary, and tags into one searchable string.
     if not isinstance(document, dict):
         raise ValueError("Document must be a dictionary.")
 
@@ -179,6 +180,7 @@ def prepare_documents(raw_documents: list[dict[str, Any]]) -> list[dict[str, Any
     - ValueError if a required field is missing.
     - ValueError if raw_documents is empty.
     """
+    # Copy so the caller's documents are never mutated.
     if not isinstance(raw_documents, list) or not raw_documents:
         raise ValueError("raw_documents must be a non-empty list of documents.")
 
@@ -221,14 +223,19 @@ def cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
             f"Vectors must have the same dimensions ({len(vector_a)} != {len(vector_b)})."
         )
 
-    dot_product = sum(a * b for a, b in zip(vector_a, vector_b))
-    magnitude_a = math.sqrt(sum(a * a for a in vector_a))
-    magnitude_b = math.sqrt(sum(b * b for b in vector_b))
+    # Dot product of the two vectors.
+    dot = math.fsum(a * b for a, b in zip(vector_a, vector_b))
+    # Squared magnitudes of each vector.
+    sum_sq_a = math.fsum(a * a for a in vector_a)
+    sum_sq_b = math.fsum(b * b for b in vector_b)
 
-    if magnitude_a == 0 or magnitude_b == 0:
+    # Zero-vector guard: cosine is undefined when either magnitude is zero.
+    if sum_sq_a == 0 or sum_sq_b == 0:
         return 0.0
 
-    return float(dot_product / (magnitude_a * magnitude_b))
+    score = dot / math.sqrt(sum_sq_a * sum_sq_b)  # single sqrt => identical vectors give exactly 1.0
+    # Clamp to [-1, 1] so floating-point drift cannot push the score outside the valid cosine range.
+    return float(max(-1.0, min(1.0, score)))
 
 
 def embed_documents(
@@ -247,6 +254,7 @@ def embed_documents(
 
     Do not mutate the input documents.
     """
+    # Copy so the caller's documents are never mutated.
     embedded = []
     for index, document in enumerate(prepared_documents):
         text = document.get("text")
@@ -289,25 +297,28 @@ def rank_documents(
             "score": 0.87
         }
     """
+    # Validate inputs.
     if not isinstance(query, str) or not query.strip():
         raise ValueError("Query must be a non-empty string.")
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
         raise ValueError("top_k must be a positive integer.")
 
-    query_embedding = embedding_model.embed(query)
+    # Embed query.
+    query_embedding = embedding_model.embed(query.strip())
 
+    # Score each doc.
     results = []
     for index, document in enumerate(embedded_documents):
         if "embedding" not in document:
             raise ValueError(f"Document at index {index} is missing an 'embedding'.")
 
         result = {field: document.get(field) for field in REQUIRED_DOCUMENT_FIELDS}
-        if "tags" in document:
-            result["tags"] = document["tags"]
         result["score"] = cosine_similarity(query_embedding, document["embedding"])
         results.append(result)
 
+    # Sort descending.
     results.sort(key=lambda result: result["score"], reverse=True)
+    # Slice top_k (slicing naturally handles top_k > len(documents)).
     return results[:top_k]
 
 
@@ -330,6 +341,7 @@ def semantic_search(
 
     This function should orchestrate the smaller helper functions.
     """
+    # Prepare documents, embed them, then rank against the query.
     prepared_documents = prepare_documents(raw_documents)
     embedded_documents = embed_documents(prepared_documents, embedding_model)
     return rank_documents(query, embedded_documents, embedding_model, top_k=top_k)
